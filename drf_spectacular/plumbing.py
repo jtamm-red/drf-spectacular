@@ -666,10 +666,35 @@ def resolve_regex_path_parameter(path_regex, variable, available_formats):
     TODO also try to handle regular grouped regex parameters
     """
     for match in _PATH_PARAMETER_COMPONENT_RE.finditer(path_regex):
-        converter, parameter = match.group('converter'), match.group('parameter')
+        converter, param = match.group('converter'), match.group('parameter')
         enum_values = None
+        parameter = param
 
-        if converter and converter.startswith('drf_format_suffix_'):
+        if api_settings.SCHEMA_COERCE_PATH_PK and parameter == 'pk':
+            parameter = 'id'
+
+        if parameter != variable:
+            continue
+
+        if not converter:
+            if param == 'pk':
+                return None
+            for name, regex in analyze_named_regex_pattern(path_regex).items():
+                if name == param:
+                    if regex == '':
+                        return None
+                    return build_parameter_type(
+                        name=parameter,
+                        schema={
+                            'type': 'string',
+                            'pattern': regex
+                        },
+                        location=OpenApiParameter.PATH,
+                        enum=enum_values,
+                    )
+            return None
+
+        if converter.startswith('drf_format_suffix_'):
             explicit_formats = converter[len('drf_format_suffix_'):].split('_')
             enum_values = [
                 f'.{suffix}' for suffix in explicit_formats if suffix in available_formats
@@ -678,37 +703,32 @@ def resolve_regex_path_parameter(path_regex, variable, available_formats):
         elif converter == 'drf_format_suffix':
             enum_values = [f'.{suffix}' for suffix in available_formats]
 
-        if api_settings.SCHEMA_COERCE_PATH_PK and parameter == 'pk':
-            parameter = 'id'
-
-        if converter and parameter == variable:
-            if converter in DJANGO_PATH_CONVERTER_MAPPING:
+        if converter in DJANGO_PATH_CONVERTER_MAPPING:
+            return build_parameter_type(
+                name=parameter,
+                schema=build_basic_type(DJANGO_PATH_CONVERTER_MAPPING[converter]),
+                location=OpenApiParameter.PATH,
+                enum=enum_values,
+            )
+        django_converter = django_get_converter(converter)
+        if django_converter:
+            converter_schema = None
+            converter_regex = getattr(django_converter, 'regex')
+            if has_override(django_converter, 'field'):
+                annotation = get_override(django_converter, 'field')
+                converter_schema = build_basic_type(annotation) if is_basic_type(annotation) else annotation
+            elif converter_regex:
+                converter_schema = {
+                    'type': 'string',
+                    'pattern': converter_regex
+                }
+            if converter_schema:
                 return build_parameter_type(
                     name=parameter,
-                    schema=build_basic_type(DJANGO_PATH_CONVERTER_MAPPING[converter]),
+                    schema=converter_schema,
                     location=OpenApiParameter.PATH,
                     enum=enum_values,
                 )
-            else:
-                django_converter = django_get_converter(converter)
-                if django_converter:
-                    converter_schema = None
-                    converter_regex = getattr(django_converter, 'regex')
-                    if has_override(django_converter, 'field'):
-                        annotation = get_override(django_converter, 'field')
-                        converter_schema = build_basic_type(annotation) if is_basic_type(annotation) else annotation
-                    elif converter_regex:
-                        converter_schema = {
-                            'type': 'string',
-                            'pattern': converter_regex
-                        }
-                    if converter_schema:
-                        return build_parameter_type(
-                            name=parameter,
-                            schema=converter_schema,
-                            location=OpenApiParameter.PATH,
-                            enum=enum_values,
-                        )
 
     return None
 
